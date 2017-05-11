@@ -20,7 +20,7 @@ std::thread th1( []() { so_some_task(); } ); //lambda
 2. Once the thread is created one can decide to `join` or `detach`
 3. If the thread is not joined or detached before the thread is destroyed, `std::thread` 
 dtor calls `std::terminate()`, thus the program terminates
-4. make sure that all the objects the the `std::thread` uses are valid till its lifetime, otherwise UB
+4. make sure that all the objects `std::thread` uses are valid till its lifetime, otherwise UB
 ```cpp
 void foo() {
     auto val = 10;
@@ -108,5 +108,142 @@ of execution of operations on two or more threads
     restart the transaction
 
 ## `std::mutex`
-1. 
+1. making all the code that excess the data **mutually exclusive**
+2. lock the mutex before accessing the data, unlock once its done with the data
+3. While one thread lock the mutex all other threads wait till the mutex got unlocked.
+4. Its not recommeted to call the individual funcitons `lock()` and `unlock()` directly
+5. Use RAII class `std::lock_guard`
+
+```cpp
+std::mutex some_mutex;
+
+void add_to_colection(int val) {
+    std::lock_guard<std::mutex> guard{ some_mutex };
+    vec.push_back(val);
+}
+
+bool is_in_collection(int val) {
+    std::lock_guard<std::mutex> guard{ some_mutex };
+    return std::find(std::begin(vec), std::end(vec), val) != std::end(vec);
+}
+```
+6. Any code that has access to the pointer or reference of shared data can now
+access/modify the protected data without locking the mutex
+7. **deadlock** threads cannot proceed as each is waiting for the other to release its mutex
+8. Always lock two mutexes in the same order to avoid deadlock [this may not be always true]
+
+## `std::lock`
+1. `std::lock` can lock two or more mutexes at once without the risk of deadlock
+2. `std::adopt_lock` indicate the `lock_guard` that the mutexes are already locked
+and they should just adopt the ownership of the existing lock on mutex in the ctor
+```cpp
+{
+    std::lock(mu1, mu2); //calling thread locks the mutex
+    std::lock_guard<std::mutex> l1{ mu1, std::adopt_lock };
+    std::lock_guard<std::mutex> l2{ mu2, std::adopt_lock };
+    do_somithing(shared_data);
+}
+```
+3. `std::lock` provides **all or nothing** approach, which means if any mutex throws exception while
+locking all the mutexes will be unlocked [either get all lock or nothing]
+4. `std::lock` helps to avoid deaslock when aquire 2/more locks together; It cannot help when
+acquired separately
+
+## Avoiding deadlock
+1. avoid nested locks
+2. avoid call user-supplied code while holding a lock
+3. Acquire locks in a fixed order, if you cant acquire as a single operation using `std::lock`
+4. Use a lock hierarchy [take light]
+
+## `std::unique_lock`
+1. more flexible as it doesn't always own a mutex
+2. `std::adopt_lock` lock object manage the lock on mutex
+    1. It assumes that the calling thread already owns the losk
+    2. wrapper should adopt the ownership of the mutex and release it when
+    goes out of scope
+3. `std::defer_lock` mutex should remain unlocked on construction 
+    1. It assumes that the calling thread is going to call lock later
+    2. wrapper going to release the lock when it goes out of scope
+4. lock can be acquired later by calling `lock()` on `std::unique_lock` obj.
+5. slower than `std::lock_guard`, need more space too
+```cpp
+std::lock(m1, m2); // calling thread locks the mutex  
+std::lock_guard<std::mutex> lock1(m1, std::adopt_lock);    
+std::lock_guard<std::mutex> lock2(m2, std::adopt_lock);
+// access shared data protected by the m1 and m2
+
+std::unique_lock<std::mutex> lock1(m1, std::defer_lock);    
+std::unique_lock<std::mutex> lock2(m2, std::defer_lock);    
+std::lock(lock1, lock2);
+// access shared data protected by the m1 and m2
+```
+6. `std::lock_guard` with `std::adopt_lock` strategy assumes the mutex is already acquired
+7. `std::unique_lock` with `std::defer_lock` strategy assumes the mutex is not acquired on construction, 
+rather than explicitly going to be locked
+8. compiler will catch the error if you forget to define one of the `unique_lock` statements
+9. if you forget one of the `lock_guard` statements, compiler will not show any error, but there will be deadlock
+10. Locking with appropriate grained granularity
+    1. fine grained granularity [small amount is protected with lock]
+    2. coarse grained granularity [large amount of date is protected by lock]
+The idea is not to block the other threads with unnecessary time consuming tasks, which may reduce the improvements
+gained by multithreading
+Here `std::unique_lock` can be really handy
+```cpp
+void get_process_data() {
+    std::unique_lock<std::mutex> lk{ mu };
+    auto data = get_next_data(); //needs to be thread safe
+    lk.unlock();
+    // each thread function on different chunk of data. 
+    // So can be all thread runs simultanously 
+    auto result = process(data); 
+    lk.lock();
+    write_result(result); //write needs to be synchronized so lock()
+}
+```
+11. In general lock needs to be held for period of time as minimum as possible
+
+## `std::call_once` 
+1. Lazy initialization is common in single-threaded code 
+```cpp
+std::shared_ptr<some_resource> res_ptr;
+
+void foo() {
+    if (!res_ptr) res_ptr.reset(new some_resource{});
+    res_ptr->do_something();
+}
+```
+2. double-checked locking pattern is bad
+```cpp
+void ub_code() {
+    if (!res_ptr) {
+        std::lock_guard<std::mutex> lk{ res_ptr };
+        if (!res_ptr) res_ptr.reset( new some_resource{} ); //write
+    }
+    res_ptr->do_something(); //read
+}
+```
+3. Here the write is not synchronized with the read
+4. There is no guarantee that @ `do_something` ptr may not be fully initialized
+5. `std::once_flag` and `std::call_once`
+```cpp
+std::once_flag of;
+
+void foo() {
+    std::call_once(of, [](){
+        res_ptr.reset( new some_resource{} );
+    });
+    res_ptr->do_something();
+}
+```
+
+## static variable
+1. static variables all are thread safe
+
+## `std::recursive_mutex`
+1. UB -> if a thread try to lock a mutex which its already locked
+2. You can have multiple lock on a single instance of same thread
+3. Another thread can access only if all locks are released by owning thread
+4. If 1 thread calls lock 3 times another thread can access only if the thread 1 call unlock 3 times
+
+# Synchronizing concurrent operations
 
